@@ -649,9 +649,10 @@ struct KinFuApp
 {
   enum { PCD_BIN = 1, PCD_ASCII = 2, PLY = 3, MESH_PLY = 7, MESH_VTK = 8 };
   
-  KinFuApp(pcl::Grabber& source, float vsz, int icp, int viz, boost::shared_ptr<CameraPoseProcessor> pose_processor=boost::shared_ptr<CameraPoseProcessor> () ) : exit_ (false), scan_ (false), scan_mesh_(false), scan_volume_ (false), independent_camera_ (false),
+  KinFuApp(pcl::Grabber& source, float vsz, float lambda_regul, int use_hint, int icp, int viz, boost::shared_ptr<CameraPoseProcessor> pose_processor=boost::shared_ptr<CameraPoseProcessor> () ) : use_hint_ (use_hint), exit_ (false), scan_ (false), scan_mesh_(false), scan_volume_ (false), independent_camera_ (false),
       registration_ (false), integrate_colors_ (false), pcd_source_ (false), focal_length_(-1.f), capture_ (source), scene_cloud_view_(viz), image_view_(viz), time_ms_(0), icp_(icp), viz_(viz), pose_processor_ (pose_processor)
   {    
+
     //Init Kinfu Tracker
     Eigen::Vector3f volume_size = Vector3f::Constant (vsz/*meters*/);    
     kinfu_.volume().setSize (volume_size);
@@ -662,10 +663,11 @@ struct KinFuApp
     Eigen::Affine3f pose = Eigen::Translation3f (t) * Eigen::AngleAxisf (R);
 
     kinfu_.setInitalCameraPose (pose);
-    kinfu_.volume().setTsdfTruncDist (0.030f/*meters*/);    
+    kinfu_.volume().setTsdfTruncDist (0.030f/*meters*/);
     kinfu_.setIcpCorespFilteringParams (0.1f/*meters*/, sin ( pcl::deg2rad(20.f) ));
     //kinfu_.setDepthTruncationForICP(5.f/*meters*/);
     kinfu_.setCameraMovementThreshold(0.001f);
+    kinfu_.setRegularisationParam (lambda_regul);
 
     if (!icp)
       kinfu_.disableIcp();
@@ -780,7 +782,7 @@ struct KinFuApp
         if (integrate_colors_)
           has_image = kinfu_ (depth_device_, image_view_.colors_device_);
         else
-          has_image = kinfu_ (depth_device_);                  
+          has_image = kinfu_ (depth_device_, IMUhint_);
       }
 
       // process camera pose
@@ -834,6 +836,7 @@ struct KinFuApp
   
   void source_cb1_device(const boost::shared_ptr<openni_wrapper::DepthImage>& depth_wrapper)  
   {        
+   //   std::cout << "source_cb1_device" << std::endl;
     {
       boost::mutex::scoped_try_lock lock(data_ready_mutex_);
       if (exit_ || !lock)
@@ -845,13 +848,15 @@ struct KinFuApp
 
       source_depth_data_.resize(depth_.cols * depth_.rows);
       depth_wrapper->fillDepthImageRaw(depth_.cols, depth_.rows, &source_depth_data_[0]);
-      depth_.data = &source_depth_data_[0];     
+      depth_.data = &source_depth_data_[0];
+      IMUhint_ = NULL;
     }
     data_ready_cond_.notify_one();
   }
 
   void source_cb2_device(const boost::shared_ptr<openni_wrapper::Image>& image_wrapper, const boost::shared_ptr<openni_wrapper::DepthImage>& depth_wrapper, float)
   {
+  //    std::cout << "source_cb1_oni" << std::endl;
     {
       boost::mutex::scoped_try_lock lock(data_ready_mutex_);
       if (exit_ || !lock)
@@ -871,14 +876,16 @@ struct KinFuApp
 
       source_image_data_.resize(rgb24_.cols * rgb24_.rows);
       image_wrapper->fillRGB(rgb24_.cols, rgb24_.rows, (unsigned char*)&source_image_data_[0]);
-      rgb24_.data = &source_image_data_[0];           
+      rgb24_.data = &source_image_data_[0];
+      IMUhint_ = NULL;
     }
     data_ready_cond_.notify_one();
   }
 
 
    void source_cb1_oni(const boost::shared_ptr<openni_wrapper::DepthImage>& depth_wrapper)  
-  {        
+  {
+   //    std::cout << "source_cb1_oni" << std::endl;
     {
       boost::mutex::scoped_lock lock(data_ready_mutex_);
       if (exit_)
@@ -890,13 +897,15 @@ struct KinFuApp
 
       source_depth_data_.resize(depth_.cols * depth_.rows);
       depth_wrapper->fillDepthImageRaw(depth_.cols, depth_.rows, &source_depth_data_[0]);
-      depth_.data = &source_depth_data_[0];     
+      depth_.data = &source_depth_data_[0];
+      IMUhint_ = NULL;
     }
     data_ready_cond_.notify_one();
   }
 
   void source_cb2_oni(const boost::shared_ptr<openni_wrapper::Image>& image_wrapper, const boost::shared_ptr<openni_wrapper::DepthImage>& depth_wrapper, float)
   {
+  //    std::cout << "source_cb2_oni" << std::endl;
     {
       boost::mutex::scoped_lock lock(data_ready_mutex_);
       if (exit_)
@@ -916,7 +925,8 @@ struct KinFuApp
 
       source_image_data_.resize(rgb24_.cols * rgb24_.rows);
       image_wrapper->fillRGB(rgb24_.cols, rgb24_.rows, (unsigned char*)&source_image_data_[0]);
-      rgb24_.data = &source_image_data_[0];           
+      rgb24_.data = &source_image_data_[0];
+      IMUhint_ = NULL;
     }
     data_ready_cond_.notify_one();
   }
@@ -924,6 +934,7 @@ struct KinFuApp
   void
   source_cb3 (const pcl::PointCloud<pcl::PointXYZRGBA>::ConstPtr & DC3)
   {
+   //   std::cout << "source_cb3" << std::endl;
     {
       boost::mutex::scoped_try_lock lock(data_ready_mutex_);
       if (exit_ || !lock)
@@ -953,6 +964,18 @@ struct KinFuApp
       }
       rgb24_.data = &source_image_data_[0];
       depth_.data = &source_depth_data_[0];
+      if (use_hint_ == 1)
+      {
+          IMUhint_ = new Eigen::Affine3f(DC3->sensor_orientation_);
+          std::cout << DC3->header.frame_id <<  std::endl;
+        std::cout << "using IMU: "
+                  << DC3->sensor_orientation_.w() << " "
+                  << DC3->sensor_orientation_.x() << " "
+                  << DC3->sensor_orientation_.y() << " "
+                  << DC3->sensor_orientation_.z() <<  std::endl;
+      }
+      else IMUhint_ = NULL;
+
     }
     data_ready_cond_.notify_one ();
   }
@@ -1108,6 +1131,8 @@ struct KinFuApp
   std::vector<unsigned short> source_depth_data_;
   PtrStepSz<const unsigned short> depth_;
   PtrStepSz<const KinfuTracker::PixelRGB> rgb24_;
+  Eigen::Affine3f *IMUhint_;
+  int use_hint_;
 
   int time_ms_;
   int icp_, viz_;
@@ -1290,6 +1315,11 @@ main (int argc, char* argv[])
 
   float volume_size = 3.f;
   pc::parse_argument (argc, argv, "-volume_size", volume_size);
+  float lambda_regul = 0.f;
+  pc::parse_argument (argc, argv, "-lambda_regul", lambda_regul);
+  int use_hint = 0;
+  pc::parse_argument (argc, argv, "-use_hint", use_hint);
+
 
   int icp = 1, visualization = 1;
   std::vector<float> depth_intrinsics;
@@ -1303,7 +1333,7 @@ main (int argc, char* argv[])
     pose_processor.reset (new CameraPoseWriter (camera_pose_file));
   }
 
-  KinFuApp app (*capture, volume_size, icp, visualization, pose_processor);
+  KinFuApp app (*capture, volume_size, lambda_regul, use_hint, icp, visualization, pose_processor);
 
   if (pc::parse_argument (argc, argv, "-eval", eval_folder) > 0)
     app.toggleEvaluationMode(eval_folder, match_file);
@@ -1341,8 +1371,7 @@ main (int argc, char* argv[])
     else
     {
         pc::print_error("Depth intrinsics must be given on the form fx,fy[,cx,cy].\n");
-        return -1;
-    }   
+        return -1;    }   
   }
 
   // executing

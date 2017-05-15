@@ -120,7 +120,13 @@ namespace pcl
           */
         void
         setIcpCorespFilteringParams (float distThreshold, float sineOfAngle);
-        
+
+        /** \brief Sets ICP regularization parameter.
+          * \param[in] lambda regularization term.
+          */
+        void
+        setRegularisationParam (float lambda);
+
         /** \brief Sets integration threshold. TSDF volume is integrated iff a camera movement metric exceedes the threshold value. 
           * The metric represents the following: M = (rodrigues(Rotation).norm() + alpha*translation.norm())/2, where alpha = 1.f (hardcoded constant)
           * \param[in] threshold a value to compare with the metric. Suitable values are ~0.001          
@@ -243,6 +249,8 @@ namespace pcl
         float  distThres_;
         /** \brief angle threshold in correspondences filtering. Represents max sine of angle between normals. */
         float angleThres_;
+        /** \brief lambda for regularization. */
+        float lambda_;
         
         /** \brief Depth pyramid. */
         std::vector<DepthMap> depths_curr_;
@@ -283,6 +291,9 @@ namespace pcl
 
         /** \brief ICP step is completelly disabled. Inly integratio now */
         bool disable_icp_;
+
+        // offset due to 1rst acq with IMU
+        Matrix3frm rotation_initIMU_inv;
         
         /** \brief Allocates all GPU internal buffers.
           * \param[in] rows_arg

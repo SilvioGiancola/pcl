@@ -82,7 +82,7 @@ pcl::gpu::KinfuTracker::KinfuTracker (int rows, int cols) : rows_(rows), cols_(c
   setDepthIntrinsics (KINFU_DEFAULT_DEPTH_FOCAL_X, KINFU_DEFAULT_DEPTH_FOCAL_Y); // default values, can be overwritten
   
   init_Rcam_ = Eigen::Matrix3f::Identity ();// * AngleAxisf(-30.f/180*3.1415926, Vector3f::UnitX());
-  init_tcam_ = volume_size * 0.5f - Vector3f (0, 0, volume_size (2) / 2 * 1.2f);
+  init_tcam_ = volume_size * 0.5f;// - Vector3f (0, 0, volume_size (2) / 2 * 1.2f);
 
   const int iters[] = {10, 5, 4};
   std::copy (iters, iters + LEVELS, icp_iterations_);
@@ -90,9 +90,11 @@ pcl::gpu::KinfuTracker::KinfuTracker (int rows, int cols) : rows_(rows), cols_(c
   const float default_distThres = 0.10f; //meters
   const float default_angleThres = sin (20.f * 3.14159254f / 180.f);
   const float default_tranc_dist = 0.03f; //meters
+  const float default_lambda = 0.f;
 
   setIcpCorespFilteringParams (default_distThres, default_angleThres);
   tsdf_volume_->setTsdfTruncDist (default_tranc_dist);
+  setRegularisationParam (default_lambda);
 
   allocateBufffers (rows, cols);
 
@@ -151,6 +153,13 @@ pcl::gpu::KinfuTracker::setIcpCorespFilteringParams (float distThreshold, float 
 {
   distThres_  = distThreshold; //mm
   angleThres_ = sineOfAngle;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void
+pcl::gpu::KinfuTracker::setRegularisationParam (float lambda)
+{
+  lambda_ = lambda;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -259,6 +268,12 @@ pcl::gpu::KinfuTracker::operator() (const DepthMap& depth_raw,
       //can't perform more on first frame
       if (global_time_ == 0)
       {
+
+        if (hint)
+          rotation_initIMU_inv = hint->rotation().matrix().inverse(); // newest stuff 2017
+        else
+          rotation_initIMU_inv = Matrix3frm::Identity();
+
         Matrix3frm init_Rcam = rmats_[0]; //  [Ri|ti] - pos of camera, i.e.
         Vector3f   init_tcam = tvecs_[0]; //  transform from camera to global coo space for (i-1)th camera pose
 
@@ -292,8 +307,8 @@ pcl::gpu::KinfuTracker::operator() (const DepthMap& depth_raw,
       Vector3f tcurr;
       if(hint)
       {
-        Rcurr = hint->rotation().matrix();
-        tcurr = hint->translation().matrix();
+        Rcurr = rotation_initIMU_inv * hint->rotation().matrix(); // 2017 : add rot_ini_IMU_inv has PRE-mult.
+        tcurr = tprev; //hint->translation().matrix();
       }
       else
       {
@@ -337,14 +352,20 @@ pcl::gpu::KinfuTracker::operator() (const DepthMap& depth_raw,
             estimateCombined (device_Rcurr, device_tcurr, vmap_curr, nmap_curr, device_Rprev_inv, device_tprev, intr (level_index),
                               vmap_g_prev, nmap_g_prev, distThres_, angleThres_, gbuf_, sumbuf_, A.data (), b.data ());
     #endif
+
+            A(1,1) += lambda_;
+            A(2,2) += lambda_;
+            A(3,3) += lambda_;
+
             //checking nullspace
             double det = A.determinant ();
+
 
             if (fabs (det) < 1e-15 || pcl_isnan (det))
             {
               if (pcl_isnan (det)) cout << "qnan" << endl;
 
-              reset ();
+            //  reset (); // DO NOT RESET IF LOST
               return (false);
             }
             //float maxc = A.maxCoeff();

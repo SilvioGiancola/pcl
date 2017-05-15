@@ -55,6 +55,7 @@ if(build)
         "include/pcl/${SUBSYS_NAME}/sac_model_plane.h"
         "include/pcl/${SUBSYS_NAME}/sac_model_registration.h"
         "include/pcl/${SUBSYS_NAME}/sac_model_registration_2d.h"
+        "include/pcl/${SUBSYS_NAME}/sac_model_registration_translation.h"
         "include/pcl/${SUBSYS_NAME}/sac_model_sphere.h"
         )
 
@@ -81,6 +82,7 @@ if(build)
         "include/pcl/${SUBSYS_NAME}/impl/sac_model_plane.hpp"
         "include/pcl/${SUBSYS_NAME}/impl/sac_model_registration.hpp"
         "include/pcl/${SUBSYS_NAME}/impl/sac_model_registration_2d.hpp"
+        "include/pcl/${SUBSYS_NAME}/impl/sac_model_registration_translation.hpp"
         "include/pcl/${SUBSYS_NAME}/impl/sac_model_sphere.hpp"
         )
 

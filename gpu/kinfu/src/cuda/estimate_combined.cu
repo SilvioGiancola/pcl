@@ -3,7 +3,7 @@
  *
  *  Point Cloud Library (PCL) - www.pointclouds.org
  *  Copyright (c) 2011, Willow Garage, Inc.
- * 
+ *
  *  All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
@@ -39,74 +39,89 @@
 //#include <pcl/gpu/utils/device/funcattrib.hpp>
 #include "device.hpp"
 
+#include <stdio.h>
+#include <pcl/gpu/containers/device_array.h>
+
 namespace pcl
 {
-  namespace device
-  {
-    typedef double float_type;
+namespace device
+{
+typedef double float_type;
 
-    template<int CTA_SIZE_, typename T>
-    static __device__ __forceinline__ void reduce(volatile T* buffer)
+template<int CTA_SIZE_, typename T>
+static __device__ __forceinline__ void reduce(volatile T* buffer)
+{
+    int tid = Block::flattenedThreadId();
+    T val =  buffer[tid];
+
+    if (CTA_SIZE_ >= 1048576) { if (tid < 524288) buffer[tid] = val = val + buffer[tid + 524288]; __syncthreads(); }
+    if (CTA_SIZE_ >= 524288) { if (tid < 262144) buffer[tid] = val = val + buffer[tid + 262144]; __syncthreads(); }
+    if (CTA_SIZE_ >= 262144) { if (tid < 131072) buffer[tid] = val = val + buffer[tid + 131072]; __syncthreads(); }
+    if (CTA_SIZE_ >= 131072) { if (tid < 65536) buffer[tid] = val = val + buffer[tid + 65536]; __syncthreads(); }
+    if (CTA_SIZE_ >= 65536) { if (tid < 32768) buffer[tid] = val = val + buffer[tid + 32768]; __syncthreads(); }
+    if (CTA_SIZE_ >= 32768) { if (tid < 16384) buffer[tid] = val = val + buffer[tid + 16384]; __syncthreads(); }
+    if (CTA_SIZE_ >= 16384) { if (tid < 8192) buffer[tid] = val = val + buffer[tid + 8192]; __syncthreads(); }
+    if (CTA_SIZE_ >= 8192) { if (tid < 4096) buffer[tid] = val = val + buffer[tid + 4096]; __syncthreads(); }
+    if (CTA_SIZE_ >= 4096) { if (tid < 2048) buffer[tid] = val = val + buffer[tid + 2048]; __syncthreads(); }
+    if (CTA_SIZE_ >= 2048) { if (tid < 1024) buffer[tid] = val = val + buffer[tid + 1024]; __syncthreads(); }
+    if (CTA_SIZE_ >= 1024) { if (tid < 512) buffer[tid] = val = val + buffer[tid + 512]; __syncthreads(); }
+    if (CTA_SIZE_ >=  512) { if (tid < 256) buffer[tid] = val = val + buffer[tid + 256]; __syncthreads(); }
+    if (CTA_SIZE_ >=  256) { if (tid < 128) buffer[tid] = val = val + buffer[tid + 128]; __syncthreads(); }
+    if (CTA_SIZE_ >=  128) { if (tid <  64) buffer[tid] = val = val + buffer[tid +  64]; __syncthreads(); }
+
+    if (tid < 32)
     {
-      int tid = Block::flattenedThreadId();
-      T val =  buffer[tid];
-
-      if (CTA_SIZE_ >= 1024) { if (tid < 512) buffer[tid] = val = val + buffer[tid + 512]; __syncthreads(); }
-      if (CTA_SIZE_ >=  512) { if (tid < 256) buffer[tid] = val = val + buffer[tid + 256]; __syncthreads(); }
-      if (CTA_SIZE_ >=  256) { if (tid < 128) buffer[tid] = val = val + buffer[tid + 128]; __syncthreads(); }
-      if (CTA_SIZE_ >=  128) { if (tid <  64) buffer[tid] = val = val + buffer[tid +  64]; __syncthreads(); }
-
-      if (tid < 32)
-      {
         if (CTA_SIZE_ >=   64) { buffer[tid] = val = val + buffer[tid +  32]; }
         if (CTA_SIZE_ >=   32) { buffer[tid] = val = val + buffer[tid +  16]; }
         if (CTA_SIZE_ >=   16) { buffer[tid] = val = val + buffer[tid +   8]; }
         if (CTA_SIZE_ >=    8) { buffer[tid] = val = val + buffer[tid +   4]; }
         if (CTA_SIZE_ >=    4) { buffer[tid] = val = val + buffer[tid +   2]; }
         if (CTA_SIZE_ >=    2) { buffer[tid] = val = val + buffer[tid +   1]; }
-      }
     }
+}
 
-    struct Combined
+struct Combined
+{
+    enum
     {
-      enum
-      {
         CTA_SIZE_X = 32,
         CTA_SIZE_Y = 8,
         CTA_SIZE = CTA_SIZE_X * CTA_SIZE_Y
-      };
+    };
 
 
-      Mat33 Rcurr;
-      float3 tcurr;
+    Mat33 Rcurr;
+    float3 tcurr;
 
-      PtrStep<float> vmap_curr;
-      PtrStep<float> nmap_curr;
+    PtrStep<float> vmap_curr;
+    PtrStep<float> nmap_curr;
 
-      Mat33 Rprev_inv;
-      float3 tprev;
+    Mat33 Rprev_inv;
+    float3 tprev;
 
-      Intr intr;
+    Intr intr;
 
-      PtrStep<float> vmap_g_prev;
-      PtrStep<float> nmap_g_prev;
+    PtrStep<float> vmap_g_prev;
+    PtrStep<float> nmap_g_prev;
 
-      float distThres;
-      float angleThres;
+    float distThres;
+    float angleThres;
 
-      int cols;
-      int rows;
+    int cols;
+    int rows;
+    mutable int* cnt_buffer;
+    mutable PtrStep<float_type> dist_array;
 
-      mutable PtrStep<float_type> gbuf;
+    mutable PtrStep<float_type> gbuf;
 
-      __device__ __forceinline__ bool
-      search (int x, int y, float3& n, float3& d, float3& s) const
-      {
+    __device__ __forceinline__ bool
+    search (int x, int y, float3& n, float3& d, float3& s) const
+    {
         float3 ncurr;
         ncurr.x = nmap_curr.ptr (y)[x];
 
         if (isnan (ncurr.x))
-          return (false);
+            return (false);
 
         float3 vcurr;
         vcurr.x = vmap_curr.ptr (y       )[x];
@@ -122,13 +137,13 @@ namespace pcl
         ukr.y = __float2int_rn (vcurr_cp.y * intr.fy / vcurr_cp.z + intr.cy);                      //4
 
         if (ukr.x < 0 || ukr.y < 0 || ukr.x >= cols || ukr.y >= rows || vcurr_cp.z < 0)
-          return (false);
+            return (false);
 
         float3 nprev_g;
         nprev_g.x = nmap_g_prev.ptr (ukr.y)[ukr.x];
 
         if (isnan (nprev_g.x))
-          return (false);
+            return (false);
 
         float3 vprev_g;
         vprev_g.x = vmap_g_prev.ptr (ukr.y       )[ukr.x];
@@ -136,8 +151,10 @@ namespace pcl
         vprev_g.z = vmap_g_prev.ptr (ukr.y + 2 * rows)[ukr.x];
 
         float dist = norm (vprev_g - vcurr_g);
+
+        dist_array(x,y) = dist;
         if (dist > distThres)
-          return (false);
+            return (false);
 
         ncurr.y = nmap_curr.ptr (y + rows)[x];
         ncurr.z = nmap_curr.ptr (y + 2 * rows)[x];
@@ -150,16 +167,16 @@ namespace pcl
         float sine = norm (cross (ncurr_g, nprev_g));
 
         if (sine >= angleThres)
-          return (false);
+            return (false);
         n = nprev_g;
         d = vprev_g;
         s = vcurr_g;
         return (true);
-      }
+    }
 
-      __device__ __forceinline__ void
-      operator () () const
-      {
+    __device__ __forceinline__ void
+    operator () () const
+    {
         int x = threadIdx.x + blockIdx.x * CTA_SIZE_X;
         int y = threadIdx.y + blockIdx.y * CTA_SIZE_Y;
 
@@ -167,51 +184,65 @@ namespace pcl
         bool found_coresp = false;
 
         if (x < cols && y < rows)
-          found_coresp = search (x, y, n, d, s);
+            found_coresp = search (x, y, n, d, s);
 
         float row[7];
 
         if (found_coresp)
         {
-          *(float3*)&row[0] = cross (s, n);
-          *(float3*)&row[3] = n;
-          row[6] = dot (n, d - s);
+            *(float3*)&row[0] = cross (s, n);
+            *(float3*)&row[3] = n;
+            row[6] = dot (n, d - s);
         }
         else
-          row[0] = row[1] = row[2] = row[3] = row[4] = row[5] = row[6] = 0.f;
+            row[0] = row[1] = row[2] = row[3] = row[4] = row[5] = row[6] = 0.f;
+
 
         __shared__ float_type smem[CTA_SIZE];
         int tid = Block::flattenedThreadId ();
 
+
+        __shared__ int cntmem[CTA_SIZE];
+
+        __syncthreads ();
+        if (found_coresp) cntmem[tid] = 1;
+        else cntmem[tid] = 0;
+        __syncthreads ();
+
+        reduce<CTA_SIZE>(cntmem);
+        if (tid == 0)
+            cnt_buffer[blockIdx.x + gridDim.x * blockIdx.y] = cntmem[0];
+
+
         int shift = 0;
         for (int i = 0; i < 6; ++i)        //rows
         {
-          #pragma unroll
-          for (int j = i; j < 7; ++j)          // cols + b
-          {
-            __syncthreads ();
-            smem[tid] = row[i] * row[j];
-            __syncthreads ();
+#pragma unroll
+            for (int j = i; j < 7; ++j)          // cols + b
+            {
+                __syncthreads ();
+                smem[tid] = row[i] * row[j];
+                __syncthreads ();
 
-            reduce<CTA_SIZE>(smem);
+                reduce<CTA_SIZE>(smem);
 
-            if (tid == 0)
-              gbuf.ptr (shift++)[blockIdx.x + gridDim.x * blockIdx.y] = smem[0];
-          }
+                if (tid == 0)
+                    gbuf.ptr (shift++)[blockIdx.x + gridDim.x * blockIdx.y] = smem[0];
+            }
         }
-      }
-    };
-
-    __global__ void
-    combinedKernel (const Combined cs) 
-    {
-      cs ();
     }
+};
 
-    struct TranformReduction
+__global__ void
+combinedKernel (const Combined cs)
+{
+    cs ();
+}
+
+struct TranformReduction
+{
+    enum
     {
-      enum
-      {
         CTA_SIZE = 512,
         STRIDE = CTA_SIZE,
 
@@ -220,119 +251,181 @@ namespace pcl
         TOTAL = UPPER_DIAG_MAT + B,
 
         GRID_X = TOTAL
-      };
-
-      PtrStep<float_type> gbuf;
-      int length;
-      mutable float_type* output;
-
-      __device__ __forceinline__ void
-      operator () () const
-      {
-        const float_type *beg = gbuf.ptr (blockIdx.x);
-        const float_type *end = beg + length;
-
-        int tid = threadIdx.x;
-
-        float_type sum = 0.f;
-        for (const float_type *t = beg + tid; t < end; t += STRIDE)
-          sum += *t;
-
-        __shared__ float_type smem[CTA_SIZE];
-
-        smem[tid] = sum;
-        __syncthreads ();
-
-		reduce<CTA_SIZE>(smem);
-
-        if (tid == 0)
-          output[blockIdx.x] = smem[0];
-      }
     };
 
-    __global__ void
-    TransformEstimatorKernel2 (const TranformReduction tr) 
+    PtrStep<float_type> gbuf;
+    int length;
+    mutable int* cnt_buffer;
+    mutable int* output_cnt;
+  //  mutable int* cnt;
+    mutable float_type* output;
+    mutable int out_cnt;
+
+    __device__ __forceinline__ void
+    operator () () const
     {
-      tr ();
+        {
+            const float_type *beg = gbuf.ptr (blockIdx.x);
+            const float_type *end = beg + length;
+
+            int tid = threadIdx.x;
+            //printf("tid = %d\n", tid);
+
+            float_type sum = 0.f;
+            for (const float_type *t = beg + tid; t < end; t += STRIDE)
+                sum += *t;
+
+            __shared__ float_type smem[CTA_SIZE];
+
+            smem[tid] = sum;
+            __syncthreads ();
+
+            reduce<CTA_SIZE>(smem);
+
+            if (tid == 0)
+                output[blockIdx.x] = smem[0];
+        }
+        {
+           // int tid = Block::flattenedThreadId();
+           // printf("tid : %d\n", tid);
+            //printf("blockIdx.x : %d\n", blockIdx.x);
+            const int* beg = &(cnt_buffer[blockIdx.x]);
+            const int* end = beg + length;
+
+            int tid = threadIdx.x;
+           // printf("tid = %d\n", tid);
+
+            int sum = 0.f;
+            for (const int * t = beg + tid; t < end; t += STRIDE)
+                sum += *t;
+
+            __shared__ int smem[CTA_SIZE];
+
+            smem[tid] = sum;
+            __syncthreads ();
+
+            reduce<CTA_SIZE>(smem); //1200 / 300 / 75
+
+          //  cnt[0] = cnt_buffer[0];
+
+            __syncthreads ();
+           if (tid == 0)
+                output_cnt[blockIdx.x] = smem[0];
+        }
     }
-  }
+};
+
+__global__ void
+TransformEstimatorKernel2 (const TranformReduction tr)
+{
+    tr ();
+}
+}
 }
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void
 pcl::device::estimateCombined (const Mat33& Rcurr, const float3& tcurr, 
-                               const MapArr& vmap_curr, const MapArr& nmap_curr, 
+                               const MapArr& vmap_curr, const MapArr& nmap_curr,
                                const Mat33& Rprev_inv, const float3& tprev, const Intr& intr,
-                               const MapArr& vmap_g_prev, const MapArr& nmap_g_prev, 
+                               const MapArr& vmap_g_prev, const MapArr& nmap_g_prev,
                                float distThres, float angleThres,
-                               DeviceArray2D<float_type>& gbuf, DeviceArray<float_type>& mbuf, 
+                               DeviceArray2D<float_type>& gbuf, DeviceArray<float_type>& mbuf,
                                float_type* matrixA_host, float_type* vectorB_host)
 {
-  int cols = vmap_curr.cols ();
-  int rows = vmap_curr.rows () / 3;
+    int cols = vmap_curr.cols ();
+    int rows = vmap_curr.rows () / 3;
 
-  Combined cs;
 
-  cs.Rcurr = Rcurr;
-  cs.tcurr = tcurr;
+    Combined cs;
 
-  cs.vmap_curr = vmap_curr;
-  cs.nmap_curr = nmap_curr;
+    cs.Rcurr = Rcurr;
+    cs.tcurr = tcurr;
 
-  cs.Rprev_inv = Rprev_inv;
-  cs.tprev = tprev;
+    cs.vmap_curr = vmap_curr;
+    cs.nmap_curr = nmap_curr;
 
-  cs.intr = intr;
+    cs.Rprev_inv = Rprev_inv;
+    cs.tprev = tprev;
 
-  cs.vmap_g_prev = vmap_g_prev;
-  cs.nmap_g_prev = nmap_g_prev;
+    cs.intr = intr;
 
-  cs.distThres = distThres;
-  cs.angleThres = angleThres;
+    cs.vmap_g_prev = vmap_g_prev;
+    cs.nmap_g_prev = nmap_g_prev;
 
-  cs.cols = cols;
-  cs.rows = rows;
+    cs.distThres = distThres;
+    cs.angleThres = angleThres;
 
-//////////////////////////////
+    cs.cols = cols;
+    cs.rows = rows;
 
-  dim3 block (Combined::CTA_SIZE_X, Combined::CTA_SIZE_Y);
-  dim3 grid (1, 1, 1);
-  grid.x = divUp (cols, block.x);
-  grid.y = divUp (rows, block.y);
 
-  mbuf.create (TranformReduction::TOTAL);
-  if (gbuf.rows () != TranformReduction::TOTAL || gbuf.cols () < (int)(grid.x * grid.y))
-    gbuf.create (TranformReduction::TOTAL, grid.x * grid.y);
+    //////////////////////////////
 
-  cs.gbuf = gbuf;
+    dim3 block (Combined::CTA_SIZE_X, Combined::CTA_SIZE_Y);
+    dim3 grid (1, 1, 1);
+    grid.x = divUp (cols, block.x);
+    grid.y = divUp (rows, block.y);
 
-  combinedKernel<<<grid, block>>>(cs);
-  cudaSafeCall ( cudaGetLastError () );
-  //cudaSafeCall(cudaDeviceSynchronize());
+    mbuf.create (TranformReduction::TOTAL);
+    if (gbuf.rows () != TranformReduction::TOTAL || gbuf.cols () < (int)(grid.x * grid.y))
+        gbuf.create (TranformReduction::TOTAL, grid.x * grid.y);
 
-  //printFuncAttrib(combinedKernel);
 
-  TranformReduction tr;
-  tr.gbuf = gbuf;
-  tr.length = grid.x * grid.y;
-  tr.output = mbuf;
 
-  TransformEstimatorKernel2<<<TranformReduction::TOTAL, TranformReduction::CTA_SIZE>>>(tr);
-  cudaSafeCall (cudaGetLastError ());
-  cudaSafeCall (cudaDeviceSynchronize ());
+    pcl::gpu::DeviceArray<int> cnt_buffer;
+    cnt_buffer.create (grid.x * grid.y);
 
-  float_type host_data[TranformReduction::TOTAL];
-  mbuf.download (host_data);
+    pcl::gpu::DeviceArray2D<float> dist_array;
+    dist_array.create (rows, cols);
 
-  int shift = 0;
-  for (int i = 0; i < 6; ++i)  //rows
-    for (int j = i; j < 7; ++j)    // cols + b
-    {
-      float_type value = host_data[shift++];
-      if (j == 6)       // vector b
-        vectorB_host[i] = value;
-      else
-        matrixA_host[j * 6 + i] = matrixA_host[i * 6 + j] = value;
-    }
+    cs.dist_array = dist_array;
+    cs.cnt_buffer = cnt_buffer;
+
+    cs.gbuf = gbuf;
+
+    combinedKernel<<<grid, block>>>(cs);
+    cudaSafeCall ( cudaGetLastError () );
+    cudaSafeCall(cudaDeviceSynchronize());
+
+    /////////////////////////////
+
+    TranformReduction tr;
+    tr.gbuf = gbuf;
+    tr.length = grid.x * grid.y;
+    tr.output = mbuf;
+    tr.cnt_buffer = cnt_buffer;
+
+    pcl::gpu::DeviceArray<int> output_cnt;
+    output_cnt.create (1);
+    tr.output_cnt = output_cnt;
+
+
+    TransformEstimatorKernel2<<<TranformReduction::TOTAL, TranformReduction::CTA_SIZE>>>(tr);
+    cudaSafeCall (cudaGetLastError ());
+    cudaSafeCall (cudaDeviceSynchronize ());
+
+    float_type host_data[TranformReduction::TOTAL];
+    mbuf.download (host_data);
+
+
+
+    int host_cnt[1];
+    output_cnt.download(host_cnt);
+    int number_matches = host_cnt[0] ;
+
+    int shift = 0;
+    for (int i = 0; i < 6; ++i)  //rows
+        for (int j = i; j < 7; ++j)    // cols + b
+        {
+            float_type value = host_data[shift++] / (number_matches*1.0f);
+            if (j == 6)       // vector b
+                vectorB_host[i] = value;
+            else
+                matrixA_host[j * 6 + i] = matrixA_host[i * 6 + j] = value;
+
+        }
+
+   // printf("number_matches = %f [%d/%d]\n", (number_matches*1.0f) / (cols*rows*1.0f), number_matches, cols*rows );
 }
